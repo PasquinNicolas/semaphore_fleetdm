@@ -1,0 +1,77 @@
+---
+- name: Install and configure ClamAV on Ubuntu
+  hosts: workstations
+  become: yes
+
+  tasks:
+    - name: Update the apt package index
+      apt:
+        update_cache: yes
+
+    - name: Install ClamAV and ClamAV Daemon
+      apt:
+        name:
+          - clamav
+          - clamav-daemon
+        state: present
+
+    - name: Check ClamAV installation
+      command: clamscan --version
+      register: clamav_version
+      changed_when: false
+
+    - debug:
+        msg: "ClamAV version installed: {{ clamav_version.stdout }}"
+
+    - name: Stop clamav-freshclam service
+      systemd:
+        name: clamav-freshclam
+        state: stopped
+
+    - name: Update ClamAV signature database
+      command: freshclam
+      register: freshclam_update
+      failed_when: "'error' in freshclam_update.stdout"
+
+    - name: Ensure /var/lib/clamav directory exists
+      file:
+        path: /var/lib/clamav
+        state: directory
+        mode: '0755'
+
+    - name: Download the daily.cvd file if freshclam failed
+      get_url:
+        url: https://database.clamav.net/daily.cvd
+        dest: /var/lib/clamav/daily.cvd
+      when: "'error' in freshclam_update.stdout"
+
+    - name: Start clamav-freshclam service
+      systemd:
+        name: clamav-freshclam
+        state: started
+
+    - name: Install ClamTK
+      apt:
+        name: clamtk
+        state: present
+
+    - name: Create ClamAV scan script
+      copy:
+        dest: /etc/cron.daily/clamav-scan
+        content: |
+          #!/bin/bash
+          LOGFILE="/var/log/clamav/clamscan.log"
+          clamscan --infected --remove --recursive / > $LOGFILE
+        mode: '0755'
+
+    - name: Ensure /var/log/clamav directory exists
+      file:
+        path: /var/log/clamav
+        state: directory
+        mode: '0755'
+      
+    - name: Run an initial scan of the system
+      command: clamscan --infected --remove --recursive /
+      async: 3600
+      poll: 0
+      ignore_errors: yes
